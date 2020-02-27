@@ -20,6 +20,7 @@ import com.hazelcast.config.SplitBrainProtectionConfig;
 import com.hazelcast.core.EntryListener;
 import com.hazelcast.map.IMap;
 import com.hazelcast.map.LocalMapStats;
+import com.hazelcast.spi.impl.InternalCompletableFuture;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -57,6 +58,33 @@ import java.util.concurrent.TimeUnit;
  */
 @SuppressWarnings("checkstyle:methodcount")
 public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
+
+    /**
+     * Stores a Map in the multimap synchronously.
+     * <p>
+     * This method performs a bulk put into a MultiMap
+     * by partitions similar to Map.putAllAsync
+     *
+     * @param m the map to be stored
+     */
+    void putAll(@Nonnull Map<?, Collection> m);
+
+    /**
+     * Stores a Map in the multimap aynchronously.
+     * <p>
+     * This method performs a bulk put into a MultiMap
+     * by partitions similar to Map.putAllAsync.
+     * <p>
+     * <b>Warning:</b> The Map and result of the put cannot be fetched
+     * from the Future.
+     *
+     * @param m the map to be stored
+     * @return a void Future
+     */
+    //FIXME:should be narrowly generic, but as it were, MultiMapProxySupport is not genericized.
+    //Another alternative is to pass in MultiMapValue
+    InternalCompletableFuture<Void> putAllAsync(@Nonnull Map<? extends Object, Collection> m);
+
     /**
      * Stores a key-value pair in the multimap.
      * <p>
@@ -85,7 +113,8 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      * @param key the key whose associated values are to be returned
      * @return the collection of the values associated with the key
      */
-    @Nonnull Collection<V> get(@Nonnull K key);
+    @Nonnull
+    Collection<V> get(@Nonnull K key);
 
     /**
      * Removes the given key value pair from the multimap.
@@ -116,7 +145,8 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      * @return the collection of removed values associated with the given key.
      * The returned collection might be modifiable but it has no effect on the multimap.
      */
-    @Nonnull Collection<V> remove(@Nonnull Object key);
+    @Nonnull
+    Collection<V> remove(@Nonnull Object key);
 
     /**
      * Deletes all the entries with the given key.
@@ -144,7 +174,8 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      *
      * @return the locally owned keys
      */
-    @Nonnull Set<K> localKeySet();
+    @Nonnull
+    Set<K> localKeySet();
 
     /**
      * Returns the set of keys in the multimap.
@@ -156,7 +187,8 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      * @return the set of keys in the multimap (the returned set might be
      * modifiable but it has no effect on the multimap)
      */
-    @Nonnull Set<K> keySet();
+    @Nonnull
+    Set<K> keySet();
 
     /**
      * Returns the collection of values in the multimap.
@@ -168,7 +200,8 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      * @return the collection of values in the multimap (the returned
      * collection might be modifiable but it has no effect on the multimap)
      */
-    @Nonnull Collection<V> values();
+    @Nonnull
+    Collection<V> values();
 
     /**
      * Returns the set of key-value pairs in the multimap.
@@ -180,7 +213,8 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      * @return the set of key-value pairs in the multimap (the returned
      * set might be modifiable but it has no effect on the multimap)
      */
-    @Nonnull Set<Map.Entry<K, V>> entrySet();
+    @Nonnull
+    Set<Map.Entry<K, V>> entrySet();
 
     /**
      * Returns whether the multimap contains an entry with the key.
@@ -279,7 +313,8 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      *                     {@code false} otherwise
      * @return returns registration ID for the entry listener
      */
-    @Nonnull UUID addEntryListener(@Nonnull EntryListener<K, V> listener, boolean includeValue);
+    @Nonnull
+    UUID addEntryListener(@Nonnull EntryListener<K, V> listener, boolean includeValue);
 
     /**
      * Removes the specified entry listener.
@@ -307,8 +342,9 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      *                     {@code false} otherwise
      * @return returns registration ID
      */
-    @Nonnull UUID addEntryListener(@Nonnull EntryListener<K, V> listener,
-                            @Nonnull K key, boolean includeValue);
+    @Nonnull
+    UUID addEntryListener(@Nonnull EntryListener<K, V> listener,
+                          @Nonnull K key, boolean includeValue);
 
     /**
      * Acquires a lock for the specified key.
@@ -480,5 +516,6 @@ public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
      *
      * @return this multimap's local statistics.
      */
-    @Nonnull LocalMultiMapStats getLocalMultiMapStats();
+    @Nonnull
+    LocalMultiMapStats getLocalMultiMapStats();
 }
