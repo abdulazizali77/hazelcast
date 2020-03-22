@@ -56,12 +56,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 
 import static com.hazelcast.internal.util.CollectionUtil.asIntegerList;
 import static com.hazelcast.internal.util.ConcurrencyUtil.CALLER_RUNS;
 import static com.hazelcast.internal.util.ExceptionUtil.rethrow;
-import static com.hazelcast.internal.util.Preconditions.checkNotNull;
 import static com.hazelcast.internal.util.MapUtil.toIntSize;
+import static com.hazelcast.internal.util.Preconditions.checkNotNull;
 import static com.hazelcast.multimap.impl.MultiMapProxyImpl.NULL_KEY_IS_NOT_ALLOWED;
 import static com.hazelcast.multimap.impl.MultiMapProxyImpl.NULL_VALUE_IS_NOT_ALLOWED;
 import static com.hazelcast.spi.impl.InternalCompletableFuture.newCompletedFuture;
@@ -120,7 +121,7 @@ public abstract class MultiMapProxySupport extends AbstractDistributedObject<Mul
 
     //NB: this method is generally copied from MapProxySupport#putAllInternal
     @SuppressWarnings({"checkstyle:npathcomplexity", "checkstyle:methodlength"})
-    protected void putAllInternal(Map<? extends Object, Collection> map,
+    protected void putAllInternal(Map<Data, Collection<Data>> map,
                                   @Nullable InternalCompletableFuture<Void> future) {
 
         //get partition to entries mapping
@@ -161,19 +162,24 @@ public abstract class MultiMapProxySupport extends AbstractDistributedObject<Mul
 
             // fill entriesPerPartition
             MapEntries[] entriesPerPartition = new MapEntries[partitionCount];
-            for (Map.Entry entry : map.entrySet()) {
+            for (Map.Entry<Data, Collection<Data>> entry : map.entrySet()) {
                 checkNotNull(entry.getKey(), NULL_KEY_IS_NOT_ALLOWED);
                 checkNotNull(entry.getValue(), NULL_VALUE_IS_NOT_ALLOWED);
 
                 //TODO: add and use PartitioningStrategy?
-                Data keyData = serializationService.toData(entry.getKey());
+                Data keyData = entry.getKey();
                 int partitionId = partitionService.getPartitionId(keyData);
                 MapEntries entries = entriesPerPartition[partitionId];
                 if (entries == null) {
                     entries = new MapEntries(initialSize);
                     entriesPerPartition[partitionId] = entries;
                 }
-                entries.add(keyData, toData(entry.getValue()));
+                //NB: the collection has to be unwind and reprocessed into objects
+                //because mapEntries is a one to one mapping of Data -> Data
+                List<Object> tempColl = entry.getValue().parallelStream().map(o -> {
+                    return getNodeEngine().toObject(o);
+                }).collect(Collectors.toList());
+                entries.add(keyData, toData(tempColl));
 
                 //TODO:implement batching
                 /*

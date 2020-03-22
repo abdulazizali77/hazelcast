@@ -20,6 +20,7 @@ import com.hazelcast.config.EntryListenerConfig;
 import com.hazelcast.config.MultiMapConfig;
 import com.hazelcast.core.EntryListener;
 import com.hazelcast.core.HazelcastInstanceAware;
+import com.hazelcast.internal.cluster.Versions;
 import com.hazelcast.internal.nio.ClassLoaderUtil;
 import com.hazelcast.internal.serialization.Data;
 import com.hazelcast.internal.util.ExceptionUtil;
@@ -34,19 +35,24 @@ import com.hazelcast.splitbrainprotection.SplitBrainProtectionOn;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.text.MessageFormat;
 import java.util.Collection;
 import java.util.EventListener;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static com.hazelcast.internal.util.Preconditions.checkInstanceOf;
 import static com.hazelcast.internal.util.Preconditions.checkNotNull;
 import static com.hazelcast.internal.util.Preconditions.checkPositive;
+import static com.hazelcast.internal.util.Preconditions.checkTrue;
 import static com.hazelcast.internal.util.SetUtil.createHashSet;
 
 @SuppressWarnings("checkstyle:methodcount")
@@ -57,6 +63,7 @@ public class MultiMapProxyImpl<K, V>
     protected static final String NULL_KEY_IS_NOT_ALLOWED = "Null key is not allowed!";
     protected static final String NULL_VALUE_IS_NOT_ALLOWED = "Null value is not allowed!";
     protected static final String NULL_LISTENER_IS_NOT_ALLOWED = "Null listener is not allowed!";
+    protected static final String MINIMUM_VERSION_ERROR_FORMAT = "{0} is only available with cluster version {1} or greater";
 
     public MultiMapProxyImpl(MultiMapConfig config, MultiMapService service, NodeEngine nodeEngine, String name) {
         super(config, service, nodeEngine, name);
@@ -94,16 +101,116 @@ public class MultiMapProxyImpl<K, V>
     }
 
     @Override
-    public void putAll(@Nonnull Map<? extends Object, Collection> m) {
-        //TODO: add contains check
-        putAllInternal(m, null);
+    public void putAll(@Nonnull Map<? extends K, Collection<? extends V>> m) {
+        checkTrue(isClusterVersionGreaterOrEqual(Versions.V4_1),
+                new UnsupportedOperationException(MessageFormat.format(MINIMUM_VERSION_ERROR_FORMAT,
+                        "MultiMap#putAll", "4.1")));
+        Map<Data, Collection<Data>> dataMap = new HashMap<Data, Collection<Data>>();
+
+        m.entrySet().parallelStream().forEach(
+                (e) -> {
+                    Object k = e.getKey();
+                    Collection<Object> ev = (Collection) e.getValue();
+                    Collection v = ev.parallelStream().map(o -> {
+                        return toData(o);
+                    }).collect(Collectors.toList());
+                    dataMap.put(toData(k), v);
+                }
+        );
+        putAllInternal(dataMap, null);
     }
 
     @Override
-    public InternalCompletableFuture<Void> putAllAsync(@Nonnull Map<? extends Object, Collection> m) {
-        //TODO: add contains check
+    public void putAll(@Nonnull MultiMap<K, V> m) {
+        checkTrue(isClusterVersionGreaterOrEqual(Versions.V4_1),
+                new UnsupportedOperationException(MessageFormat.format(MINIMUM_VERSION_ERROR_FORMAT,
+                        "MultiMap#putAll", "4.1")));
+        Map<Data, Collection<Data>> dataMap = new HashMap<>();
+
+        m.keySet().parallelStream().forEach(
+                (k) -> {
+                    Collection<K> ev = (Collection) m.get(k);
+                    Collection<Data> v = ev.parallelStream().map(o -> {
+                        return toData(o);
+                    }).collect(Collectors.toList());
+                    dataMap.put(toData(k), v);
+                }
+        );
+        putAllInternal(dataMap, null);
+    }
+
+    @Override
+    public void putAll(@Nonnull K key, @Nonnull Collection<? extends V> value) {
+        checkTrue(isClusterVersionGreaterOrEqual(Versions.V4_1),
+                new UnsupportedOperationException(MessageFormat.format(MINIMUM_VERSION_ERROR_FORMAT,
+                        "MultiMap#putAll", "4.1")));
+        Map<Data, Collection<Data>> dataMap = new HashMap<Data, Collection<Data>>();
+
+        Collection v = value.parallelStream().map(o -> {
+            return toData(o);
+        }).collect(Collectors.toList());
+        dataMap.put(toData(key), v);
+
+        putAllInternal(dataMap, null);
+    }
+
+    @Override
+    public CompletionStage<Void> putAllAsync(@Nonnull Map<? extends K, Collection<? extends V>> m) {
+        checkTrue(isClusterVersionGreaterOrEqual(Versions.V4_1),
+                new UnsupportedOperationException(MessageFormat.format(MINIMUM_VERSION_ERROR_FORMAT,
+                        "MultiMap#putAllAsync", "4.1")));
         InternalCompletableFuture<Void> future = new InternalCompletableFuture<>();
-        putAllInternal(m, future);
+        Map<Data, Collection<Data>> dataMap = new HashMap<Data, Collection<Data>>();
+
+        m.entrySet().parallelStream().forEach(
+                (e) -> {
+                    Object k = e.getKey();
+                    Collection<Object> ev = (Collection) e.getValue();
+                    Collection v = ev.parallelStream().map(o -> {
+                        return toData(o);
+                    }).collect(Collectors.toList());
+                    dataMap.put(toData(k), v);
+                }
+        );
+        putAllInternal(dataMap, future);
+        return future;
+    }
+
+    @Override
+    public CompletionStage<Void> putAllAsync(@Nonnull MultiMap<K, V> m) {
+        checkTrue(isClusterVersionGreaterOrEqual(Versions.V4_1),
+                new UnsupportedOperationException(MessageFormat.format(MINIMUM_VERSION_ERROR_FORMAT,
+                        "MultiMap#putAllAsync", "4.1")));
+        InternalCompletableFuture<Void> future = new InternalCompletableFuture<>();
+        Map<Data, Collection<Data>> dataMap = new HashMap<>();
+
+        m.keySet().parallelStream().forEach(
+                (k) -> {
+                    Collection<Object> ev = (Collection) m.get(k);
+                    Collection v = ev.parallelStream().map(o -> {
+                        return toData(o);
+                    }).collect(Collectors.toList());
+                    dataMap.put(toData(k), v);
+                }
+        );
+        putAllInternal(dataMap, future);
+        return future;
+    }
+
+    @Override
+    public CompletionStage<Void> putAllAsync(@Nonnull K key, @Nonnull Collection<? extends V> m) {
+        checkTrue(isClusterVersionGreaterOrEqual(Versions.V4_1),
+                new UnsupportedOperationException(MessageFormat.format(MINIMUM_VERSION_ERROR_FORMAT,
+                        "MultiMap#putAllAsync", "4.1")));
+        InternalCompletableFuture<Void> future = new InternalCompletableFuture<>();
+        Map<Data, Collection<Data>> dataMap = new HashMap<Data, Collection<Data>>();
+
+        Collection v = m.parallelStream().map(o -> {
+            return toData(o);
+        }).collect(Collectors.toList());
+        dataMap.put(toData(key), v);
+
+        putAllInternal(dataMap, future);
         return future;
     }
 

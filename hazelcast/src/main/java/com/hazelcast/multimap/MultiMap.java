@@ -20,7 +20,6 @@ import com.hazelcast.config.SplitBrainProtectionConfig;
 import com.hazelcast.core.EntryListener;
 import com.hazelcast.map.IMap;
 import com.hazelcast.map.LocalMapStats;
-import com.hazelcast.spi.impl.InternalCompletableFuture;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -28,6 +27,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -60,30 +60,114 @@ import java.util.concurrent.TimeUnit;
 public interface MultiMap<K, V> extends BaseMultiMap<K, V> {
 
     /**
-     * Stores a Map in the multimap synchronously.
+     * Stores the given Map in the MultiMap synchronously.
      * <p>
-     * This method performs a bulk put into a MultiMap
-     * by partitions similar to Map.putAllAsync
+     * This version doesn't support batching. Don't mutate the given map until the future completes.
+     * <p>
+     * No atomicity guarantees are given. It could be that in case of failure
+     * some of the key/value-pairs get written, while others are not.
+     * <p>
+     * <b>Warning:</b> There is no warning if the input Map collection items are discarded due to uniqueness
+     * eg. passing in List into a Set type MultiMap
      *
-     * @param m the map to be stored
+     * @param m the Map to be stored
+     * @since 4.1
      */
-    void putAll(@Nonnull Map<?, Collection> m);
+    void putAll(@Nonnull Map<? extends K, Collection<? extends V>> m);
 
     /**
-     * Stores a Map in the multimap aynchronously.
+     * Stores the given MultiMap in the MultiMap synchronously.
      * <p>
-     * This method performs a bulk put into a MultiMap
-     * by partitions similar to Map.putAllAsync.
+     * This version doesn't support batching. Don't mutate the given multimap until the future completes.
+     * <p>
+     * No atomicity guarantees are given. It could be that in case of failure
+     * some of the key/value-pairs get written, while others are not.
+     * <p>
+     * <b>Warning:</b> There is no warning if the input MultiMap items are discarded due to uniqueness
+     * eg. passing in List type MultiMap into a Set type MultiMap
+     *
+     * @param m the MultiMap to be stored
+     * @since 4.1
+     */
+    void putAll(@Nonnull MultiMap<K, V> m);
+
+    /**
+     * Stores the given Collection in the specified key of a MultiMap synchronously.
+     * <p>
+     * This version doesn't support batching. Don't mutate the given collection until the future completes.
+     * <p>
+     * No atomicity guarantees are given. It could be that in case of failure
+     * some of the key/value-pairs get written, while others are not.
+     * <p>
+     * <b>Warning:</b> There is no warning if the input Collection items are discarded due to uniqueness
+     * eg. passing in List into a Set type MultiMap
+     *
+     * @param key   the key to store to
+     * @param value the Collection to be stored in the MultiMap key
+     * @since 4.1
+     */
+    void putAll(@Nonnull K key, @Nonnull Collection<? extends V> value);
+
+    /**
+     * Stores the given Map in the MultiMap asynchronously.
+     * <p>
+     * This version doesn't support batching. Don't mutate the given collection until the future completes.
+     * <p>
+     * No atomicity guarantees are given. It could be that in case of failure
+     * some of the key/value-pairs get written, while others are not.
+     * <p>
+     * <b>Warning:</b> There is no warning if the input Map collection items are discarded due to uniqueness
+     * eg. passing in List into a Set type MultiMap
      * <p>
      * <b>Warning:</b> The Map and result of the put cannot be fetched
      * from the Future.
      *
      * @param m the map to be stored
-     * @return a void Future
+     * @return a void CompletionStage
+     * @since 4.1
      */
-    //FIXME:should be narrowly generic, but as it were, MultiMapProxySupport is not genericized.
-    //Another alternative is to pass in MultiMapValue
-    InternalCompletableFuture<Void> putAllAsync(@Nonnull Map<? extends Object, Collection> m);
+    CompletionStage<Void> putAllAsync(@Nonnull Map<? extends K, Collection<? extends V>> m);
+
+    /**
+     * Stores a specified MultiMap in the MultiMap synchronously.
+     * <p>
+     * This version doesn't support batching. Don't mutate the given collection until the future completes.
+     * <p>
+     * No atomicity guarantees are given. It could be that in case of failure
+     * some of the key/value-pairs get written, while others are not.
+     * <p>
+     * <b>Warning:</b> There is no warning if the input MultiMap items are discarded due to uniqueness
+     * eg. passing in List type MultiMap into a Set type MultiMap
+     * <p>
+     * <b>Warning:</b> The Map and result of the put cannot be fetched
+     * from the Future.
+     *
+     * @param m the map to be stored
+     * @return a void CompletionStage
+     * @since 4.1
+     */
+    CompletionStage<Void> putAllAsync(@Nonnull MultiMap<K, V> m);
+
+    /**
+     * Stores the given Collection in the specified key of a MultiMap asynchronously.
+     * <p>
+     * This version doesn't support batching. Don't mutate the given collection until the future completes.
+     * <p>
+     * No atomicity guarantees are given. It could be that in case of failure
+     * some of the key/value-pairs get written, while others are not.
+     * <p>
+     * <b>Warning:</b> There is no warning if the input Collection items are discarded due to uniqueness
+     * eg. passing in List into a Set type MultiMap
+     * <p>
+     * <b>Warning:</b> The Map and result of the put cannot be fetched
+     * from the Future.
+     *
+     * @param key   the key to store to
+     * @param value the Collection to be stored in the MultiMap key
+     * @return a void CompletionStage
+     * @since 4.1
+     */
+    CompletionStage<Void> putAllAsync(@Nonnull K key, @Nonnull Collection<? extends V> value);
 
     /**
      * Stores a key-value pair in the multimap.

@@ -22,6 +22,7 @@ import com.hazelcast.nio.ObjectDataInput;
 import com.hazelcast.nio.ObjectDataOutput;
 import com.hazelcast.spi.impl.operationservice.Operation;
 import com.hazelcast.spi.impl.operationservice.impl.operations.PartitionAwareOperationFactory;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -33,7 +34,7 @@ public class MultiMapPutAllOperationFactory extends PartitionAwareOperationFacto
     public MultiMapPutAllOperationFactory() {
     }
 
-    @SuppressWarnings({"EI_EXPOSE_REP2"})
+    @SuppressFBWarnings({"EI_EXPOSE_REP2"})
     public MultiMapPutAllOperationFactory(String name, int[] partitions, MapEntries[] mapEntries) {
         this.name = name;
         this.partitions = partitions;

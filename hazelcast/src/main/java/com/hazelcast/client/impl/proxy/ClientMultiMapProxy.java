@@ -31,6 +31,7 @@ import com.hazelcast.client.impl.protocol.codec.MultiMapGetCodec;
 import com.hazelcast.client.impl.protocol.codec.MultiMapIsLockedCodec;
 import com.hazelcast.client.impl.protocol.codec.MultiMapKeySetCodec;
 import com.hazelcast.client.impl.protocol.codec.MultiMapLockCodec;
+import com.hazelcast.client.impl.protocol.codec.MultiMapPutAllCodec;
 import com.hazelcast.client.impl.protocol.codec.MultiMapPutCodec;
 import com.hazelcast.client.impl.protocol.codec.MultiMapRemoveCodec;
 import com.hazelcast.client.impl.protocol.codec.MultiMapRemoveEntryCodec;
@@ -41,8 +42,10 @@ import com.hazelcast.client.impl.protocol.codec.MultiMapUnlockCodec;
 import com.hazelcast.client.impl.protocol.codec.MultiMapValueCountCodec;
 import com.hazelcast.client.impl.protocol.codec.MultiMapValuesCodec;
 import com.hazelcast.client.impl.spi.ClientContext;
+import com.hazelcast.client.impl.spi.ClientPartitionService;
 import com.hazelcast.client.impl.spi.ClientProxy;
 import com.hazelcast.client.impl.spi.EventHandler;
+import com.hazelcast.client.impl.spi.impl.ClientInvocation;
 import com.hazelcast.client.impl.spi.impl.ListenerMessageCodec;
 import com.hazelcast.cluster.Member;
 import com.hazelcast.core.EntryEvent;
@@ -62,12 +65,21 @@ import com.hazelcast.spi.impl.UnmodifiableLazySet;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.util.AbstractMap;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 
+import static com.hazelcast.internal.util.ExceptionUtil.rethrow;
 import static com.hazelcast.internal.util.Preconditions.checkNotNull;
 import static com.hazelcast.internal.util.Preconditions.checkPositive;
 import static com.hazelcast.map.impl.ListenerAdapters.createListenerAdapter;
@@ -93,17 +105,173 @@ public class ClientMultiMapProxy<K, V> extends ClientProxy implements MultiMap<K
     }
 
     @Override
-    public void putAll(@Nonnull Map<?, Collection> m) {
-        //TODO: check for m instance and-or content
-        //TODO: implement
+    public void putAll(@Nonnull Map<? extends K, Collection<? extends V>> m) {
+        Map<Data, Collection<Data>> dataMap = new HashMap<Data, Collection<Data>>();
+
+        m.entrySet().parallelStream().forEach(
+                (e) -> {
+                    Object k = e.getKey();
+                    Collection<Object> ev = (Collection) e.getValue();
+                    Collection v = ev.parallelStream().map(o -> {
+                        return toData(o);
+                    }).collect(Collectors.toList());
+                    dataMap.put(toData(k), v);
+                }
+        );
+        putAllInternal(dataMap, null);
     }
 
     @Override
-    public InternalCompletableFuture<Void> putAllAsync(@Nonnull Map<?, Collection> m) {
-        //TODO: check for m instance and-or content
+    public void putAll(@Nonnull MultiMap<K, V> m) {
+        Map<Data, Collection<Data>> dataMap = new HashMap<>();
+
+        m.keySet().parallelStream().forEach(
+                (k) -> {
+                    Collection<K> ev = (Collection) m.get(k);
+                    Collection<Data> v = ev.parallelStream().map(o -> {
+                        return toData(o);
+                    }).collect(Collectors.toList());
+                    dataMap.put(toData(k), v);
+                }
+        );
+
+        putAllInternal(dataMap, null);
+    }
+
+    @Override
+    public void putAll(@Nonnull K key, @Nonnull Collection<? extends V> value) {
+        Map<Data, Collection<Data>> dataMap = new HashMap<Data, Collection<Data>>();
+
+        Collection v = value.parallelStream().map(o -> {
+            return toData(o);
+        }).collect(Collectors.toList());
+        dataMap.put(toData(key), v);
+
+        putAllInternal(dataMap, null);
+    }
+
+    @Override
+    public CompletionStage<Void> putAllAsync(@Nonnull Map<? extends K, Collection<? extends V>> m) {
         InternalCompletableFuture<Void> future = new InternalCompletableFuture<>();
-        //TODO: implement
+        Map<Data, Collection<Data>> dataMap = new HashMap<Data, Collection<Data>>();
+
+        m.entrySet().parallelStream().forEach(
+                (e) -> {
+                    Object k = e.getKey();
+                    Collection<Object> ev = (Collection) e.getValue();
+                    Collection v = ev.parallelStream().map(o -> {
+                        return toData(o);
+                    }).collect(Collectors.toList());
+                    dataMap.put(toData(k), v);
+                }
+        );
+        putAllInternal(dataMap, future);
         return future;
+    }
+
+    @Override
+    public CompletionStage<Void> putAllAsync(@Nonnull MultiMap<K, V> m) {
+        InternalCompletableFuture<Void> future = new InternalCompletableFuture<>();
+        Map<Data, Collection<Data>> dataMap = new HashMap<>();
+
+        m.keySet().parallelStream().forEach(
+                (k) -> {
+                    Collection<Object> ev = (Collection) m.get(k);
+                    Collection v = ev.parallelStream().map(o -> {
+                        return toData(o);
+                    }).collect(Collectors.toList());
+                    dataMap.put(toData(k), v);
+                }
+        );
+        putAllInternal(dataMap, future);
+        return future;
+    }
+
+    @Override
+    public CompletionStage<Void> putAllAsync(@Nonnull K key, Collection<? extends V> value) {
+        InternalCompletableFuture<Void> future = new InternalCompletableFuture<>();
+        Map<Data, Collection<Data>> dataMap = new HashMap<Data, Collection<Data>>();
+
+        Collection v = value.parallelStream().map(o -> {
+            return toData(o);
+        }).collect(Collectors.toList());
+        dataMap.put(toData(key), v);
+
+        putAllInternal(dataMap, future);
+        return future;
+    }
+
+
+    @SuppressWarnings({"checkstyle:cyclomaticcomplexity", "checkstyle:npathcomplexity", "checkstyle:methodlength"})
+    private void putAllInternal(@Nonnull Map<Data, Collection<Data>> map,
+                                @Nullable InternalCompletableFuture<Void> future) {
+
+        if (map.isEmpty()) {
+            if (future != null) {
+                future.complete(null);
+            }
+            return;
+        }
+
+        ClientPartitionService partitionService = getContext().getPartitionService();
+        int partitionCount = partitionService.getPartitionCount();
+        Map<Integer, List<Map.Entry<Data, Data>>> entryMap = new HashMap<>(partitionCount);
+
+        for (Map.Entry<Data, Collection<Data>> entry : map.entrySet()) {
+            checkNotNull(entry.getKey(), NULL_KEY_IS_NOT_ALLOWED);
+            checkNotNull(entry.getValue(), NULL_VALUE_IS_NOT_ALLOWED);
+
+            Data keyData = entry.getKey();
+            int partitionId = partitionService.getPartitionId(keyData);
+            List<Map.Entry<Data, Data>> partition = entryMap.get(partitionId);
+            if (partition == null) {
+                partition = new ArrayList<>();
+                entryMap.put(partitionId, partition);
+            }
+
+            //NB: the collection has to be unwind and reprocessed into objects
+            //because mapEntries is a one to one mapping of Data -> Data
+            List<Object> tempColl = entry.getValue().parallelStream().map(o -> {
+                return toObject(o);
+            }).collect(Collectors.toList());
+            partition.add(new AbstractMap.SimpleEntry<>(keyData, toData(tempColl)));
+        }
+        assert entryMap.size() > 0;
+        AtomicInteger counter = new AtomicInteger(entryMap.size());
+        InternalCompletableFuture<Void> resultFuture =
+                future != null ? future : new InternalCompletableFuture<>();
+        BiConsumer<ClientMessage, Throwable> callback = (response, t) -> {
+            if (t != null) {
+                resultFuture.completeExceptionally(t);
+            }
+            if (counter.decrementAndGet() == 0) {
+                finalizePutAll(map, entryMap);
+                if (!resultFuture.isDone()) {
+                    resultFuture.complete(null);
+                }
+            }
+        };
+
+        for (Map.Entry<Integer, List<Map.Entry<Data, Data>>> entry : entryMap.entrySet()) {
+            Integer partitionId = entry.getKey();
+            // if there is only one entry, consider how we can use MapPutRequest
+            // without having to get back the return value
+            ClientMessage request = MultiMapPutAllCodec.encodeRequest(name, entry.getValue());
+            new ClientInvocation(getClient(), request, getName(), partitionId)
+                    .invoke()
+                    .whenCompleteAsync(callback);
+        }
+        // if executing in sync mode, block for the responses
+        if (future == null) {
+            try {
+                resultFuture.get();
+            } catch (Throwable e) {
+                throw rethrow(e);
+            }
+        }
+    }
+
+    protected void finalizePutAll(Map<Data, Collection<Data>> map, Map<Integer, List<Map.Entry<Data, Data>>> entryMap) {
     }
 
     @Override
@@ -545,4 +713,6 @@ public class ClientMultiMapProxy<K, V> extends ClientProxy implements MultiMap<K
                     getSerializationService());
         }
     }
+
+
 }

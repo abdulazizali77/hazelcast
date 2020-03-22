@@ -20,15 +20,17 @@ import com.hazelcast.config.Config;
 import com.hazelcast.config.MultiMapConfig;
 import com.hazelcast.core.EntryAdapter;
 import com.hazelcast.core.EntryEvent;
+import com.hazelcast.core.EntryListener;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.internal.util.Clock;
 import com.hazelcast.map.MapEvent;
-import com.hazelcast.spi.impl.InternalCompletableFuture;
+import com.hazelcast.test.Accessors;
 import com.hazelcast.test.HazelcastParallelClassRunner;
 import com.hazelcast.test.HazelcastTestSupport;
 import com.hazelcast.test.TestHazelcastInstanceFactory;
 import com.hazelcast.test.annotation.ParallelJVMTest;
 import com.hazelcast.test.annotation.QuickTest;
+import com.hazelcast.version.Version;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
@@ -46,6 +48,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -113,38 +116,17 @@ public class MultiMapTest extends HazelcastTestSupport {
         assertEquals(0, multiMap.size());
     }
 
-    @Test
-    public void testMultiMapPutAllAsyncList() {
-        HazelcastInstance instance1 = createHazelcastInstanceFactory(2)
-                .newInstances(smallInstanceConfig())[0];
-
-        MultiMap<String, Integer> mmap1 = instance1.getMultiMap("testMultiMapPutAllAsync");
-        Map<String, Collection> expectedMultiMap = new HashMap<String, Collection>();
-        expectedMultiMap.put("A", new ArrayList<Integer>(Arrays.asList(1, 2, 3, 4, 5, 1, 1, 1, 1, 1, 1, 1, 1)));
-        expectedMultiMap.put("B", new ArrayList<Integer>(Arrays.asList(6, 7, 8, 9)));
-        expectedMultiMap.put("C", new ArrayList<Integer>(Arrays.asList(10, 11, 12, 13, 14, 15)));
-        expectedMultiMap.put("D", new ArrayList<Integer>(Arrays.asList(16, 17, 18)));
-        expectedMultiMap.put("E", new ArrayList<Integer>(Arrays.asList(19, 20, 21, 22, 23, 99, 100)));
-
-        final CountDownLatch latchAdded = new CountDownLatch(25);
-        mmap1.addEntryListener(new EntryAdapter<String, Integer>() {
-            public void entryAdded(EntryEvent<String, Integer> event) {
-                String key = event.getKey();
-                Integer value = event.getValue();
-                Collection<Integer> c = expectedMultiMap.get(key);
-                assertContains(c, value);
-                latchAdded.countDown();
+    protected <K, V> EntryListener<K, V> putAllEntryListenerBuilder(Consumer<EntryEvent<K, V>> f) {
+        return new EntryAdapter<K, V>() {
+            public void entryAdded(EntryEvent<K, V> event) {
+                f.accept(event);
             }
 
-            public void entryRemoved(EntryEvent<String, Integer> event) {
+            public void entryRemoved(EntryEvent<K, V> event) {
                 System.out.println("entryRemoved " + event);
             }
 
-            public void entryUpdated(EntryEvent<String, Integer> event) {
-                throw new AssertionError("MultiMap cannot get update event!");
-            }
-
-            public void entryEvicted(EntryEvent<String, Integer> event) {
+            public void entryEvicted(EntryEvent<K, V> event) {
                 entryRemoved(event);
             }
 
@@ -156,18 +138,94 @@ public class MultiMapTest extends HazelcastTestSupport {
             public void mapCleared(MapEvent event) {
                 System.out.println("mapCleared " + event);
             }
-        }, true);
+        };
+    }
 
+    protected HazelcastInstance testMultiMapPutAllSetup() {
+        MultiMapConfig multiMapConfig1 = new MultiMapConfig()
+                .setName("testMultiMapPutAllMapList")
+                .setValueCollectionType("LIST")
+                .setBinary(false);
+        MultiMapConfig multiMapConfig2 = new MultiMapConfig()
+                .setName("testMultiMapPutAllMapSet")
+                .setValueCollectionType("SET")
+                .setBinary(false);
+        MultiMapConfig multiMapConfig3 = new MultiMapConfig()
+                .setName("expectedMultiMap1")
+                .setValueCollectionType("LIST")
+                .setBinary(false);
+        Config cfg = smallInstanceConfig()
+                .addMultiMapConfig(multiMapConfig1)
+                .addMultiMapConfig(multiMapConfig2)
+                .addMultiMapConfig(multiMapConfig3);
+        HazelcastInstance hz = createHazelcastInstanceFactory(1)
+                .newInstances(cfg)[0];
+
+        Accessors.getNode(hz).getClusterService().changeClusterVersion(Version.of(4, 1));
+        return hz;
+    }
+
+    public void testMultiMapPutAllTemplate(HazelcastInstance instance1,
+                                           Map<String, Collection<? extends Integer>> expectedMultiMap1,
+                                           MultiMap<String, Integer> expectedMultiMap2,
+                                           Consumer<MultiMap<String, Integer>> putAllOperation1) {
+
+        MultiMap<String, Integer> mmap1 = instance1.getMultiMap("testMultiMapPutAllMapList");
+        MultiMap<String, Integer> mmap2 = instance1.getMultiMap("testMultiMapPutAllMapSet");
+        Map<String, Collection<Integer>> resultMap1 = new HashMap<>();
+        Map<String, Collection<Integer>> resultMap2 = new HashMap<>();
+
+        int totalItems = 0;
+        Set<String> ks = expectedMultiMap1 != null
+                ? expectedMultiMap1.keySet() : expectedMultiMap2.keySet();
+        for (String s : ks) {
+            Collection expectedCollection = expectedMultiMap1 != null
+                    ? expectedMultiMap1.get(s) : expectedMultiMap2.get(s);
+            totalItems += expectedCollection.size()
+                    + ((Long) expectedCollection.stream().distinct().count()).intValue();
+        }
+
+        final CountDownLatch latchAdded = new CountDownLatch(totalItems);
+        mmap1.addEntryListener(putAllEntryListenerBuilder((event) -> {
+                    String key = (String) event.getKey();
+                    Integer value = (Integer) event.getValue();
+                    Collection<Integer> c;
+                    if (!resultMap1.containsKey(key)) {
+                        c = new ArrayList<>();
+                    } else {
+                        c = resultMap1.get(key);
+                    }
+                    c.add(value);
+                    resultMap1.put(key, c);
+                    latchAdded.countDown();
+                }
+        ), true);
+        mmap2.addEntryListener(putAllEntryListenerBuilder((event) -> {
+                    String key = (String) event.getKey();
+                    Integer value = (Integer) event.getValue();
+                    Collection<Integer> c;
+                    if (!resultMap2.containsKey(key)) {
+                        c = new ArrayList<>();
+                    } else {
+                        c = resultMap2.get(key);
+                    }
+                    c.add(value);
+                    resultMap2.put(key, c);
+                    latchAdded.countDown();
+                }
+        ), true);
         try {
-            InternalCompletableFuture<Void> future = mmap1.putAllAsync(expectedMultiMap);
-
+            putAllOperation1.accept(mmap1);
+            putAllOperation1.accept(mmap2);
             latchAdded.await(5, TimeUnit.MINUTES);
-            //FIXME: maybe too much waiting
-            assertTrueEventually("", () -> assertTrue(future.isDone()), 300);
-            for (String s : expectedMultiMap.keySet()) {
-                Collection c = mmap1.get(s);
-                Collection c2 = expectedMultiMap.get(s);
-                assertEquals(c.size(), c2.size());
+
+            for (String s : ks) {
+                Collection c1 = resultMap1.get(s);
+                Collection c2 = resultMap2.get(s);
+                Collection expectedCollection = expectedMultiMap1 != null
+                        ? expectedMultiMap1.get(s) : expectedMultiMap2.get(s);
+                assertEquals(expectedCollection.size(), c1.size());
+                assertEquals(expectedCollection.stream().distinct().count(), c2.size());
             }
 
         } catch (Exception e) {
@@ -176,128 +234,125 @@ public class MultiMapTest extends HazelcastTestSupport {
     }
 
     @Test
-    public void testMultiMapPutAllAsyncSet() {
-        HazelcastInstance instance1 = createHazelcastInstanceFactory(1)
-                .newInstances(smallInstanceConfig())[0];
+    public void testMultiMapPutAllMap() {
+        Map<String, Collection<? extends Integer>> expectedMultiMap1 = new HashMap<>();
+        expectedMultiMap1.put("A", new ArrayList<Integer>(Arrays.asList(1, 1, 1, 1, 2)));
+        expectedMultiMap1.put("B", new ArrayList<Integer>(Arrays.asList(6, 6, 6, 9)));
+        expectedMultiMap1.put("C", new ArrayList<Integer>(Arrays.asList(10, 10, 10, 10, 10, 15)));
 
-        MultiMap<String, Integer> mmap1 = instance1.getMultiMap("testMultiMapPutAllAsync");
-        Map<String, Collection> expectedMultiMap = new HashMap<String, Collection>();
-
-        expectedMultiMap.put("A", new HashSet<Integer>(Arrays.asList(1, 2, 3, 4, 5, 5, 5, 4, 4, 3, 2, 1)));
-        expectedMultiMap.put("B", new HashSet<Integer>(Arrays.asList(6, 7, 8, 9, 9, 8, 8, 7, 7)));
-        expectedMultiMap.put("C", new HashSet<Integer>(Arrays.asList(10, 11, 12, 13, 14, 15, 11, 10)));
-        expectedMultiMap.put("D", new HashSet<Integer>(Arrays.asList(16, 16, 17, 18)));
-        expectedMultiMap.put("E", new HashSet<Integer>(Arrays.asList(19, 20, 21, 22, 23)));
-
-        final CountDownLatch latchAdded = new CountDownLatch(23);
-        mmap1.addEntryListener(new EntryAdapter<String, Integer>() {
-            public void entryAdded(EntryEvent<String, Integer> event) {
-                String key = event.getKey();
-                Integer value = event.getValue();
-                Collection<Integer> c = expectedMultiMap.get(key);
-                assertContains(c, value);
-                latchAdded.countDown();
-            }
-
-            public void entryRemoved(EntryEvent<String, Integer> event) {
-                System.out.println("entryRemoved " + event);
-            }
-
-            public void entryUpdated(EntryEvent<String, Integer> event) {
-                throw new AssertionError("MultiMap cannot get update event!");
-            }
-
-            public void entryEvicted(EntryEvent<String, Integer> event) {
-                entryRemoved(event);
-            }
-
-            @Override
-            public void mapEvicted(MapEvent event) {
-            }
-
-            @Override
-            public void mapCleared(MapEvent event) {
-                System.out.println("mapCleared " + event);
-            }
-        }, true);
-
-        try {
-            InternalCompletableFuture<Void> future = mmap1.putAllAsync(expectedMultiMap);
-
-            latchAdded.await(5, TimeUnit.MINUTES);
-            //FIXME: maybe too much waiting
-            assertTrueEventually("", () -> assertTrue(future.isDone()), 300);
-            for (String s : expectedMultiMap.keySet()) {
-                Collection c = mmap1.get(s);
-                Collection c2 = expectedMultiMap.get(s);
-                assertEquals(c.size(), c2.size());
-            }
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        testMultiMapPutAllTemplate(testMultiMapPutAllSetup(),
+                expectedMultiMap1, null,
+                (o) -> {
+                    o.putAll(expectedMultiMap1);
+                }
+        );
     }
 
     @Test
-    public void testMultiMapPutAllAsyncMixed() {
-        HazelcastInstance instance1 = createHazelcastInstanceFactory(2)
-                .newInstances(smallInstanceConfig())[0];
+    public void testMultiMapPutAllMultiMap() {
+        HazelcastInstance instance1 = testMultiMapPutAllSetup();
+        MultiMap<String, Integer> expectedMultiMap1 = instance1.getMultiMap("expectedMultiMap1");
 
-        MultiMap<String, Integer> mmap1 = instance1.getMultiMap("testMultiMapPutAllAsync");
-        Map<String, Collection> expectedMultiMap = new HashMap<String, Collection>();
+        expectedMultiMap1.put("A", 1);
+        expectedMultiMap1.put("A", 1);
+        expectedMultiMap1.put("A", 1);
+        expectedMultiMap1.put("A", 1);
+        expectedMultiMap1.put("A", 2);
+        expectedMultiMap1.put("B", 6);
+        expectedMultiMap1.put("B", 6);
+        expectedMultiMap1.put("B", 6);
+        expectedMultiMap1.put("B", 9);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 15);
 
-        expectedMultiMap.put("A", new HashSet<Integer>(Arrays.asList(1, 2, 3, 4, 5, 5, 5, 4, 4, 3, 2, 1)));
-        expectedMultiMap.put("B", new ArrayList<Integer>(Arrays.asList(6, 7, 8, 9)));
-        expectedMultiMap.put("C", new HashSet<Integer>(Arrays.asList(10, 11, 12, 13, 14, 15, 11, 10)));
-        expectedMultiMap.put("D", new ArrayList<Integer>(Arrays.asList(16, 17, 18)));
-        expectedMultiMap.put("E", new HashSet<Integer>(Arrays.asList(19, 20, 21, 22, 23)));
+        testMultiMapPutAllTemplate(instance1,
+                null, expectedMultiMap1,
+                (o) -> {
+                    o.putAll(expectedMultiMap1);
+                }
+        );
+    }
 
-        final CountDownLatch latchAdded = new CountDownLatch(23);
-        mmap1.addEntryListener(new EntryAdapter<String, Integer>() {
-            public void entryAdded(EntryEvent<String, Integer> event) {
-                String key = event.getKey();
-                Integer value = event.getValue();
-                Collection<Integer> c = expectedMultiMap.get(key);
-                assertContains(c, value);
-                latchAdded.countDown();
-            }
+    @Test
+    public void testMultiMapPutAllKey() {
+        Map<String, Collection<? extends Integer>> expectedMultiMap1 = new HashMap<>();
+        expectedMultiMap1.put("A", new ArrayList<Integer>(Arrays.asList(1, 1, 1, 1, 2)));
+        expectedMultiMap1.put("B", new ArrayList<Integer>(Arrays.asList(6, 6, 6, 9)));
+        expectedMultiMap1.put("C", new ArrayList<Integer>(Arrays.asList(10, 10, 10, 10, 10, 15)));
 
-            public void entryRemoved(EntryEvent<String, Integer> event) {
-                System.out.println("entryRemoved " + event);
-            }
+        testMultiMapPutAllTemplate(testMultiMapPutAllSetup(),
+                expectedMultiMap1, null,
+                (o) -> {
+                    expectedMultiMap1.keySet().parallelStream().forEach(
+                            (v) -> o.putAll(v, expectedMultiMap1.get(v))
+                    );
+                }
+        );
+    }
 
-            public void entryUpdated(EntryEvent<String, Integer> event) {
-                throw new AssertionError("MultiMap cannot get update event!");
-            }
+    @Test
+    public void testMultiMapPutAllAsyncMap() {
+        Map<String, Collection<? extends Integer>> expectedMultiMap1 = new HashMap<>();
+        expectedMultiMap1.put("A", new ArrayList<Integer>(Arrays.asList(1, 1, 1, 1, 2)));
+        expectedMultiMap1.put("B", new ArrayList<Integer>(Arrays.asList(6, 6, 6, 9)));
+        expectedMultiMap1.put("C", new ArrayList<Integer>(Arrays.asList(10, 10, 10, 10, 10, 15)));
 
-            public void entryEvicted(EntryEvent<String, Integer> event) {
-                entryRemoved(event);
-            }
+        testMultiMapPutAllTemplate(testMultiMapPutAllSetup(),
+                expectedMultiMap1, null,
+                (o) -> {
+                    o.putAllAsync(expectedMultiMap1);
+                }
+        );
+    }
 
-            @Override
-            public void mapEvicted(MapEvent event) {
-            }
+    @Test
+    public void testMultiMapPutAllAsyncMultiMap() {
+        HazelcastInstance instance1 = testMultiMapPutAllSetup();
+        MultiMap<String, Integer> expectedMultiMap1 = instance1.getMultiMap("expectedMultiMap1");
 
-            @Override
-            public void mapCleared(MapEvent event) {
-                System.out.println("mapCleared " + event);
-            }
-        }, true);
+        expectedMultiMap1.put("A", 1);
+        expectedMultiMap1.put("A", 1);
+        expectedMultiMap1.put("A", 1);
+        expectedMultiMap1.put("A", 1);
+        expectedMultiMap1.put("A", 2);
+        expectedMultiMap1.put("B", 6);
+        expectedMultiMap1.put("B", 6);
+        expectedMultiMap1.put("B", 6);
+        expectedMultiMap1.put("B", 9);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 10);
+        expectedMultiMap1.put("C", 15);
 
-        try {
-            InternalCompletableFuture<Void> future = mmap1.putAllAsync(expectedMultiMap);
+        testMultiMapPutAllTemplate(instance1,
+                null, expectedMultiMap1,
+                (o) -> {
+                    o.putAllAsync(expectedMultiMap1);
+                }
+        );
+    }
 
-            latchAdded.await(5, TimeUnit.MINUTES);
-            //FIXME: maybe too much waiting
-            assertTrueEventually("", () -> assertTrue(future.isDone()), 300);
-            for (String s : expectedMultiMap.keySet()) {
-                Collection c = mmap1.get(s);
-                Collection c2 = expectedMultiMap.get(s);
-                assertEquals(c.size(), c2.size());
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+    @Test
+    public void testMultiMapPutAllAsyncKey() {
+        Map<String, Collection<? extends Integer>> expectedMultiMap1 = new HashMap<>();
+        expectedMultiMap1.put("A", new ArrayList<Integer>(Arrays.asList(1, 1, 1, 1, 2)));
+        expectedMultiMap1.put("B", new ArrayList<Integer>(Arrays.asList(6, 6, 6, 9)));
+        expectedMultiMap1.put("C", new ArrayList<Integer>(Arrays.asList(10, 10, 10, 10, 10, 15)));
+
+        testMultiMapPutAllTemplate(testMultiMapPutAllSetup(),
+                expectedMultiMap1, null,
+                (o) -> {
+                    expectedMultiMap1.keySet().parallelStream().forEach(
+                            (v) -> o.putAllAsync(v, expectedMultiMap1.get(v))
+                    );
+                }
+        );
     }
 
     @Test

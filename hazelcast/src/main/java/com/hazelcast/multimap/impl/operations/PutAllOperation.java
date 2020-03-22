@@ -29,7 +29,8 @@ import com.hazelcast.spi.impl.operationservice.MutatingOperation;
 
 import java.io.IOException;
 import java.util.Collection;
-import java.util.Iterator;
+import java.util.Set;
+import java.util.function.Consumer;
 
 public class PutAllOperation extends AbstractMultiMapOperation implements MutatingOperation {
     private transient int currentIndex;
@@ -73,20 +74,19 @@ public class PutAllOperation extends AbstractMultiMapOperation implements Mutati
     protected void put(Data dataKey, Data dataValue) {
         MultiMapContainer container = getOrCreateContainer();
         Collection c = (Collection) toObject(dataValue);
-        //FIXME:do we even need this null check? Maybe use an Optional?
-        if (c != null) {
-            Collection<MultiMapRecord> coll = container.getOrCreateMultiMapValue(dataKey).getCollection(false);
-            Iterator it = c.iterator();
-            while (it.hasNext()) {
-                Object o = it.next();
-                recordId = container.nextId();
-                MultiMapRecord record = new MultiMapRecord(recordId, o);
-                coll.add(record);
-                //NB: we could make a coll.addAll(c) instead if we changed the getObjectCollection impl
-                getOrCreateContainer().update();
-                //FIXME: there should be a flag to turn this off?
-                publishEvent(EntryEventType.ADDED, dataKey, o, null);
-            }
+        Collection<MultiMapRecord> coll = container.getOrCreateMultiMapValue(dataKey).getCollection(false);
+        Consumer addObjToCollection = o -> {
+            recordId = container.nextId();
+            MultiMapRecord record = new MultiMapRecord(recordId, o);
+            coll.add(record);
+            getOrCreateContainer().update();
+            publishEvent(EntryEventType.ADDED, dataKey, o, null);
+        };
+
+        if (coll instanceof Set) {
+            c.parallelStream().distinct().forEach(addObjToCollection);
+        } else {
+            c.parallelStream().forEach(addObjToCollection);
         }
     }
 

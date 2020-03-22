@@ -323,8 +323,18 @@ public final class Preconditions {
      * @throws java.lang.IllegalArgumentException if the supplied expression is {@code false}.
      */
     public static void checkTrue(boolean expression, String errorMessage) {
+        checkTrue(expression, new IllegalArgumentException(errorMessage));
+    }
+
+    /**
+     * Tests whether the supplied expression is {@code true}.
+     *
+     * @param expression   the expression tested to see if it is {@code true}.
+     * @throws java.lang.RuntimeException if the supplied expression is {@code false}.
+     */
+    public static void checkTrue(boolean expression, RuntimeException exception) {
         if (!expression) {
-            throw new IllegalArgumentException(errorMessage);
+            throw exception;
         }
     }
 
